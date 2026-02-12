@@ -66,6 +66,7 @@ def generate_beatmap(file_path, melody_extract_flag=False):
     file_name = os.path.splitext(file_path)[0]
     if os.path.isfile(file_name + '_beatmap.txt'):
         print(f"The beatmap file {file_path} already exists.")
+        return
     else:
         y, sr = librosa.load(file_path)
         duration = librosa.get_duration(y=y, sr=sr)
@@ -305,6 +306,19 @@ def get_color_from_mood_detection(file_path):
 
     return mood_color
 
+def get_or_create_mood(file_path):
+    file_name = os.path.splitext(file_path)[0]
+    mood_path = file_name + "_mood.npy"
+
+    if os.path.isfile(mood_path):
+        print("Loading cached mood...")
+        return tuple(np.load(mood_path))
+
+    print("Computing mood...")
+    mood_color = get_or_create_mood(file_path)
+    np.save(mood_path, np.array(mood_color))
+    return mood_color
+
 #### init ####
 TITLE = "Melody's Quest"
 WIDTH = 512
@@ -343,8 +357,12 @@ wave_data = wave_data.T
 y, sr = librosa.load(file_path)
 duration = librosa.get_duration(y=y, sr=sr)
 
-generate_beatmap(file_path)
+beatmap_path = file_name + "_beatmap.txt"
 
+if not os.path.isfile(beatmap_path):
+    generate_beatmap(file_path)
+else:
+    print("Using existing beatmap.")
 plot_width = WIDTH
 plot_height = HEIGHT - 300
 plot_color = (218, 94, 124)
@@ -362,6 +380,7 @@ class Game:
     def __init__(self):
         # Initialize game state
         self.state = "intro"
+        self.paused = False
 
         # Initialize Pygame
         pg.init()
@@ -501,6 +520,7 @@ class Game:
                 self.grade = self.miss
                 combo = 0
                 notes.pop(0)
+                self.miss_sound.play()
                 time.sleep(1000)
             else:
                 self.value = False
@@ -540,7 +560,9 @@ class Game:
         pygame.mixer.music.load(file_path)
         pygame.mixer.music.play()
         pygame.mixer.music.set_endevent()
-        
+        self.miss_sound = pygame.mixer.Sound("miss.mp3")
+        self.perfect_sound = pygame.mixer.Sound("perfect.mp3")
+
         self.load_beatmap()
         
         self.main_game()
@@ -556,7 +578,7 @@ class Game:
         offset_time = pygame.time.get_ticks() / 1000.0
         
         # game loop
-        while True:
+        while self.state == "main_game":
             # handle events
             self.events()
             self.screen.blit(self.main_background, (0, 0))
@@ -564,10 +586,18 @@ class Game:
             # update game information
             self.score =  self.combo_font.render(str(score), True, (255, 255, 255))
             self.combo = self.combo_font.render(str(combo), True, (246, 193, 66))
-            self.waveform_drawing()
-            # Limit the frame rate
+
+            if not self.paused:
+                self.waveform_drawing()
+                # # Limit the frame rate
+                # fpsclock.tick(60)
+                self.draw_game_info()
+            else:
+                pause_text = self.combo_font.render("PAUSED", True, (255,255,255))
+                self.screen.blit(pause_text, (WIDTH//2 - 50, HEIGHT//2))
+
             fpsclock.tick(60)
-            self.draw_game_info()
+            pygame.display.flip()
 
     
     def handle_score(self, rect, i):
@@ -579,10 +609,12 @@ class Game:
 
         if abs(rect.top - i.top) < 10:
             self.grade = self.perfect
+            self.perfect_sound.play()
             if combo >= 1:
                 score = score + (1000 * combo)
             else:
                 score = score + 1000
+                
         elif abs(rect.top - i.top) <= 15:
             self.grade = self.good
 
@@ -600,6 +632,31 @@ class Game:
         self.value = True
         count = count +1
         combo = combo +1        
+
+    def reset_to_home(self):
+        global score, combo, count, notes
+
+        # Stop music but DO NOT reload
+        pygame.mixer.music.stop()
+
+        # Reset gameplay variables
+        score = 0
+        combo = 0
+        count = 0
+        notes.clear()
+
+        self.paused = False
+        self.state = "intro"
+        
+    def toggle_pause(self):
+        if not self.paused:
+            pygame.mixer.music.pause()
+            self.paused = True
+            print("Paused")
+        else:
+            pygame.mixer.music.unpause()
+            self.paused = False
+            print("Unpaused")
 
 
     def events(self):
@@ -653,6 +710,14 @@ class Game:
                         if (self.l_rect.colliderect(i)):
                             self.handle_score(self.l_rect, i)
                     pg.display.flip()
+
+                # Pause with SPACE
+                if event.key == pg.K_SPACE:
+                    self.toggle_pause()
+
+                # Reset to home with R
+                if event.key == pg.K_r:
+                    self.reset_to_home()
 
     def handle_game_state(self):
         if self.state == 'intro':
